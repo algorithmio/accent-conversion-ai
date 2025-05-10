@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time Accent Conversion AI</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        body {
+            padding-top: 2rem;
+            background-color: #f8f9fa;
+        }
+        .container {
+            max-width: 800px;
+        }
+        .card {
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+        }
+        .btn-primary {
+            background-color: #4a6bdf;
+            border-color: #4a6bdf;
+        }
+        .btn-primary:hover {
+            background-color: #3a5bbf;
+            border-color: #3a5bbf;
+        }
+        .btn-danger {
+            display: none;
+        }
+        .audio-visualizer {
+            height: 100px;
+            width: 100%;
+            background-color: #f0f0f0;
+            border-radius: 8px;
+            margin: 15px 0;
+            position: relative;
+            overflow: hidden;
+        }
+        .visualizer-bars {
+            display: flex;
+            align-items: flex-end;
+            height: 100%;
+            width: 100%;
+            padding: 0 10px;
+        }
+        .bar {
+            background-color: #4a6bdf;
+            width: 3px;
+            margin: 0 2px;
+            height: 10px;
+            transition: height 0.1s ease;
+        }
+        .volume-meter {
+            height: 20px;
+            margin-top: 10px;
+            background-color: #e9ecef;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .volume-level {
+            height: 100%;
+            width: 0%;
+            background-color: #4a6bdf;
+            transition: width 0.1s;
+        }
+        .transcription-panel {
+            max-height: 250px;
+            overflow-y: auto;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+        }
+        .interim {
+            color: #6c757d;
+            font-style: italic;
+        }
+        .final {
+            color: #212529;
+            margin-bottom: 8px;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 5px;
+            background-color: #dc3545;
+        }
+        .status-indicator.connected {
+            background-color: #28a745;
+        }
+        .status-indicator.processing {
+            background-color: #ffc107;
+        }
+        #audioPlayer {
+            width: 100%;
+            margin-top: 15px;
+        }
+        .volume-controls {
+            display: flex;
+            align-items: center;
+            margin-top: 10px;
+        }
+        .volume-controls label {
+            margin-right: 10px;
+            min-width: 80px;
+        }
+        .error-box {
+            display: none;
+            margin-top: 15px;
+        }
+        .error-details {
+            margin-top: 10px;
+            font-family: monospace;
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            border-left: 3px solid #dc3545;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                <h3 class="mb-0">Real-time Indian to British Accent Conversion</h3>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-info">
+                    <span class="status-indicator" id="connectionStatus"></span>
+                    <span id="statusText">Connecting to server...</span>
+                </div>
+                
+                <!-- Error box for API errors -->
+                <div class="alert alert-danger error-box" id="errorBox">
+                    <h5><i class="bi bi-exclamation-triangle-fill"></i> <span id="errorTitle">Error</span></h5>
+                    <p id="errorMessage">An error occurred</p>
+                    <div class="error-details" id="errorDetails"></div>
+                    <div class="mt-3">
+                        <strong>Troubleshooting:</strong>
+                        <ul>
+                            <li>Check your Google Cloud API key in the .env file</li>
+                            <li>Make sure Speech-to-Text and Text-to-Speech APIs are enabled</li>
+                            <li>Verify your API key has permission to access these services</li>
+                        </ul>
+                    </div>
+                </div>
+                
+                <p class="lead">Speak in an Indian accent and hear it converted to British accent in real-time.</p>
+                
+                <div class="audio-visualizer">
+                    <div class="visualizer-bars" id="visualizer"></div>
+                </div>
+                
+                <div class="volume-meter">
+                    <div class="volume-level" id="volumeLevel"></div>
+                </div>
+                
+                <div class="volume-controls">
+                    <label for="micSensitivity">Mic Sensitivity:</label>
+                    <input type="range" class="form-range" id="micSensitivity" min="0" max="200" value="100">
+                </div>
+                
+                <div class="d-grid gap-2 mt-4">
+                    <button class="btn btn-primary" id="startButton">Start Recording</button>
+                    <button class="btn btn-danger" id="stopButton">Stop Recording</button>
+                </div>
+                
+                <div class="card mt-4">
+                    <div class="card-header bg-light">
+                        <h5 class="mb-0">Transcription</h5>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="transcription-panel" id="transcriptionPanel">
+                            <p class="text-muted">Your speech will appear here...</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card mt-4">
+                    <div class="card-header bg-light">
+                        <h5 class="mb-0">British Accent Output</h5>
+                    </div>
+                    <div class="card-body">
+                        <audio id="audioPlayer" controls></audio>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="card-header bg-light">
+                <h5 class="mb-0">How It Works</h5>
+            </div>
+            <div class="card-body">
+                <ol>
+                    <li>Click "Start Recording" and speak in an Indian English accent</li>
+                    <li>Your audio is streamed to Google Speech-to-Text in real-time</li>
+                    <li>The transcribed text is converted to speech using Google Text-to-Speech with a British accent</li>
+                    <li>The converted audio is played back automatically</li>
+                </ol>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Create visualizer bars
+        const visualizer = document.getElementById('visualizer');
+        for (let i = 0; i < 50; i++) {
+            const bar = document.createElement('div');
+            bar.className = 'bar';
+            visualizer.appendChild(bar);
+        }
+        
+        // Audio context and socket variables
+        let audioContext;
+        let mediaStream;
+        let socket;
+        let recorder;
+        let analyser;
+        let micSensitivity = 1;
+        
+        const startButton = document.getElementById('startButton');
+        const stopButton = document.getElementById('stopButton');
+        const transcriptionPanel = document.getElementById('transcriptionPanel');
+        const connectionStatus = document.getElementById('connectionStatus');
+        const statusText = document.getElementById('statusText');
+        const audioPlayer = document.getElementById('audioPlayer');
+        const volumeLevel = document.getElementById('volumeLevel');
+        const micSensitivitySlider = document.getElementById('micSensitivity');
+        const errorBox = document.getElementById('errorBox');
+        const errorTitle = document.getElementById('errorTitle');
+        const errorMessage = document.getElementById('errorMessage');
+        const errorDetails = document.getElementById('errorDetails');
+        
+        // Connect to socket.io server
+        function connectSocket() {
+            socket = io();
+            
+            // Socket event handlers
+            socket.on('connect', () => {
+                updateStatus('connected', 'Connected to server. Ready to start.');
+                hideError();
+            });
+            
+            socket.on('disconnect', () => {
+                updateStatus('disconnected', 'Disconnected from server. Please refresh the page.');
+                stopRecording();
+            });
+            
+            socket.on('error', (error) => {
+                console.error('Socket error:', error);
+                updateStatus('error', `Error: ${error.message}`);
+                showError(error.message, error.details);
+                stopRecording();
+            });
+            
+            socket.on('streamingReady', () => {
+                updateStatus('processing', 'Recording started. Speak now...');
+                hideError();
+            });
+            
+            socket.on('transcript', (data) => {
+                updateTranscription(data.text, data.isFinal);
+            });
+            
+            socket.on('audioResult', (data) => {
+                playAudio(data.audio);
+            });
+        }
+        
+        // Show error message
+        function showError(message, details) {
+            errorBox.style.display = 'block';
+            errorMessage.textContent = message || 'An error occurred';
+            
+            if (message && message.includes('API key')) {
+                errorTitle.textContent = 'API Key Authentication Error';
+            } else if (message && message.includes('not enabled')) {
+                errorTitle.textContent = 'API Service Not Enabled';
+            } else if (message && message.includes('permission')) {
+                errorTitle.textContent = 'Permission Denied';
+            } else {
+                errorTitle.textContent = 'Error';
+            }
+            
+            if (details) {
+                errorDetails.textContent = details;
+                errorDetails.style.display = 'block';
+            } else {
+                errorDetails.style.display = 'none';
+            }
+        }
+        
+        // Hide error message
+        function hideError() {
+            errorBox.style.display = 'none';
+        }
+        
+        // Update connection status
+        function updateStatus(status, message) {
+            statusText.textContent = message;
+            
+            connectionStatus.className = 'status-indicator';
+            if (status === 'connected') {
+                connectionStatus.classList.add('connected');
+            } else if (status === 'processing') {
+                connectionStatus.classList.add('processing');
+            }
+        }
+        
+        // Update transcription panel
+        function updateTranscription(text, isFinal) {
+            if (isFinal) {
+                // Remove any interim element
+                const interim = document.querySelector('.interim');
+                if (interim) {
+                    interim.remove();
+                }
+                
+                // Add final transcription
+                const finalText = document.createElement('p');
+                finalText.className = 'final';
+                finalText.textContent = text;
+                transcriptionPanel.appendChild(finalText);
+                
+                // Scroll to bottom
+                transcriptionPanel.scrollTop = transcriptionPanel.scrollHeight;
+            } else {
+                // Update interim text
+                let interim = document.querySelector('.interim');
+                if (!interim) {
+                    interim = document.createElement('p');
+                    interim.className = 'interim';
+                    transcriptionPanel.appendChild(interim);
+                }
+                interim.textContent = text;
+                
+                // Scroll to bottom
+                transcriptionPanel.scrollTop = transcriptionPanel.scrollHeight;
+            }
+        }
+        
+        // Play audio from base64
+        function playAudio(base64Audio) {
+            const audioData = 'data:audio/mp3;base64,' + base64Audio;
+            audioPlayer.src = audioData;
+            audioPlayer.play().catch(err => console.error('Error playing audio:', err));
+        }
+        
+        // Start recording
+        async function startRecording() {
+            try {
+                hideError();
+                
+                // Initialize AudioContext
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                
+                // Get user media
+                mediaStream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    } 
+                });
+                
+                // Create analyser for visualizer
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 256;
+                
+                // Create microphone source
+                const microphone = audioContext.createMediaStreamSource(mediaStream);
+                microphone.connect(analyser);
+                
+                // Create processor for streaming
+                const processor = audioContext.createScriptProcessor(4096, 1, 1);
+                analyser.connect(processor);
+                processor.connect(audioContext.destination);
+                
+                // Start streaming to server
+                socket.emit('startStreaming');
+                
+                // Clear transcription panel
+                transcriptionPanel.innerHTML = '';
+                
+                // Update UI
+                startButton.style.display = 'none';
+                stopButton.style.display = 'block';
+                
+                // Start visualizer
+                visualize();
+                
+                // Process audio
+                processor.onaudioprocess = (e) => {
+                    // Get audio data
+                    const inputData = e.inputBuffer.getChannelData(0);
+                    
+                    // Convert to 16-bit PCM
+                    const pcmData = convertFloatTo16BitPCM(inputData);
+                    
+                    // Send to server
+                    socket.emit('audioData', { 
+                        audio: btoa(String.fromCharCode.apply(null, pcmData))
+                    });
+                    
+                    // Update volume meter
+                    updateVolumeMeter(inputData);
+                };
+                
+                // Store processor in recorder variable for cleanup
+                recorder = processor;
+                
+            } catch (error) {
+                console.error('Error starting recording:', error);
+                updateStatus('error', `Error starting recording: ${error.message}`);
+                showError('Error starting recording', error.message);
+            }
+        }
+        
+        // Stop recording
+        function stopRecording() {
+            if (mediaStream) {
+                // Stop all tracks
+                mediaStream.getTracks().forEach(track => track.stop());
+                mediaStream = null;
+                
+                // Disconnect nodes
+                if (analyser && recorder) {
+                    recorder.disconnect();
+                    analyser.disconnect();
+                }
+                
+                // Close AudioContext
+                if (audioContext) {
+                    audioContext.close().catch(err => console.error('Error closing AudioContext:', err));
+                }
+                
+                // Stop streaming on server
+                if (socket && socket.connected) {
+                    socket.emit('stopStreaming');
+                }
+                
+                // Update UI
+                startButton.style.display = 'block';
+                stopButton.style.display = 'none';
+                updateStatus('connected', 'Recording stopped. Click "Start Recording" to begin again.');
+                
+                // Reset visualizer
+                const bars = document.querySelectorAll('.bar');
+                bars.forEach(bar => bar.style.height = '10px');
+                
+                // Reset volume meter
+                volumeLevel.style.width = '0%';
+            }
+        }
+        
+        // Convert float audio data to 16-bit PCM
+        function convertFloatTo16BitPCM(float32Array) {
+            const pcmData = new Int16Array(float32Array.length);
+            for (let i = 0; i < float32Array.length; i++) {
+                const s = Math.max(-1, Math.min(1, float32Array[i]));
+                pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+            }
+            return pcmData;
+        }
+        
+        // Update visualizer
+        function visualize() {
+            if (!analyser) return;
+            
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            
+            const bars = document.querySelectorAll('.bar');
+            
+            function draw() {
+                if (!analyser) return;
+                
+                requestAnimationFrame(draw);
+                
+                analyser.getByteFrequencyData(dataArray);
+                
+                // Update each bar
+                for (let i = 0; i < bars.length; i++) {
+                    const index = Math.floor(i * bufferLength / bars.length);
+                    const value = dataArray[index];
+                    const height = (value / 255) * 100;
+                    bars[i].style.height = height + 'px';
+                }
+            }
+            
+            draw();
+        }
+        
+        // Update volume meter
+        function updateVolumeMeter(inputData) {
+            // Calculate RMS (Root Mean Square)
+            let sum = 0;
+            for (let i = 0; i < inputData.length; i++) {
+                sum += inputData[i] * inputData[i];
+            }
+            const rms = Math.sqrt(sum / inputData.length);
+            
+            // Apply sensitivity
+            const sensitivity = micSensitivitySlider.value / 100;
+            const volume = Math.min(100, rms * 100 * sensitivity * 5);
+            
+            // Update volume level
+            volumeLevel.style.width = volume + '%';
+        }
+        
+        // Event listeners
+        startButton.addEventListener('click', startRecording);
+        stopButton.addEventListener('click', stopRecording);
+        
+        micSensitivitySlider.addEventListener('input', () => {
+            micSensitivity = micSensitivitySlider.value / 100;
+        });
+        
+        // Initialize
+        window.addEventListener('load', () => {
+            connectSocket();
+        });
+        
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            stopRecording();
+            if (socket) {
+                socket.disconnect();
+            }
+        });
+    </script>
+</body>
+</html> 
