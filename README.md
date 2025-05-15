@@ -1,127 +1,160 @@
-# Real-time Accent Conversion AI
+# Real-time Accent Conversion
 
-A Node.js application that converts speech from Indian English accent to British English accent in real-time using Google Cloud Speech-to-Text and Text-to-Speech APIs.
+A real-time accent conversion system that converts Indian English accent to British English accent.
 
-## How It Works
+## Overview
 
-1. Speak in an Indian English accent into your microphone
-2. Your audio is streamed to Google Speech-to-Text API in real-time
-3. The transcribed text is converted to speech using Google Text-to-Speech with a British accent
-4. The converted audio is immediately played back with a British accent
+This MVP demonstrates real-time accent conversion using streaming speech-to-text and text-to-speech technologies. The application allows users to speak in their natural Indian English accent, and the system converts it to British English accent in real-time.
 
-## Prerequisites
+## How it Works
 
-- Node.js 14.x or higher
-- Google Cloud Platform account with Speech-to-Text and Text-to-Speech APIs enabled
-- Google Cloud API key with access to Speech-to-Text and Text-to-Speech APIs
-- A modern web browser with WebRTC support (Chrome, Firefox, Edge, etc.)
-
-## Setup
-
-1. Clone this repository
-   ```
-   git clone https://github.com/yourusername/accent-conversion-ai.git
-   cd accent-conversion-ai
-   ```
-
-2. Install dependencies
-   ```
-   npm install
-   ```
-
-3. Set up Google Cloud API key:
-   - Make sure your API key has access to Speech-to-Text and Text-to-Speech APIs
-   - Set your API key in your `.env` file:
-   ```
-   cp .env.example .env
-   # Edit .env and set GOOGLE_API_KEY to your API key
-   ```
-
-4. Start the application
-   ```
-   npm start
-   ```
-
-5. The application will be available at `http://localhost:3000`
+1. The user speaks into their microphone
+2. The audio is streamed to the server in real-time
+3. The server uses Google Cloud Speech-to-Text API to transcribe the Indian English speech
+4. The transcription is then converted to British English speech using Google Cloud Text-to-Speech API
+5. The converted audio is streamed back to the client and played
 
 ## Features
 
-- **Real-time audio streaming** - Audio is processed as you speak, with minimal latency
-- **Live transcription** - See your words transcribed in real-time
-- **Audio visualizer** - Visual feedback of your voice input
-- **Volume level indicator** - Monitor your microphone input level
-- **Adjustable microphone sensitivity** - Fine-tune input sensitivity
+- Real-time streaming audio processing
+- Low-latency accent conversion
+- Support for continuous speech
+- Browser-based client with simple UI
+- Command-line validator for quick testing
 
-## API Endpoints
+## Technical Architecture
 
-The application exposes two sets of interfaces:
+- **Backend**: Node.js with Express
+- **Real-time Communication**: Socket.io for bidirectional streaming
+- **Speech Services**: Google Cloud Speech-to-Text and Text-to-Speech APIs
+- **Frontend**: HTML, CSS, JavaScript
 
-### RESTful API (for file-based processing)
+## Setup and Installation
 
-#### Convert Audio File
+### Prerequisites
+
+- Node.js (v14 or later)
+- Google Cloud Platform account with Speech-to-Text and Text-to-Speech APIs enabled
+- Google Cloud credentials
+- SoX (Sound eXchange) for command-line validation tool
+
+### Installing SoX (required for command-line validator)
+
+SoX is required for the command-line validator as it provides audio capture capabilities.
+
+**On macOS:**
+```bash
+brew install sox
 ```
-POST /api/accent/convert
-Content-Type: multipart/form-data
 
-Form data:
-- audio: <audio_file>
+**On Ubuntu/Debian:**
+```bash
+sudo apt-get install sox libsox-fmt-all
 ```
 
-#### Download Converted Audio
+**On Windows:**
+- Download from [SoX website](http://sox.sourceforge.net/)
+- Or install with Chocolatey: `choco install sox.portable`
+- Make sure to add SoX to your PATH environment variable
+
+### Environment Variables
+
+Create a `.env` file in the root directory with the following variables:
+
 ```
-GET /download/:fileName
+GOOGLE_API_KEY=your_google_api_key
+PORT=3000
 ```
 
-### WebSocket API (for real-time processing)
+Alternatively, you can use a service account by placing your `creds.json` file in the `config` directory.
 
-The WebSocket API is used by the web client for real-time audio streaming and accent conversion.
+### Installation
 
-#### Events from Client to Server:
-- `startStreaming`: Initiates a streaming session
-- `audioData`: Sends audio data chunks to the server
-- `stopStreaming`: Ends the streaming session
+1. Clone the repository
+2. Install dependencies:
+   ```
+   npm install
+   ```
+3. Start the server:
+   ```
+   npm start
+   ```
+4. Open your browser and navigate to `http://localhost:3000`
 
-#### Events from Server to Client:
-- `streamingReady`: Confirms streaming session has started
-- `transcript`: Provides real-time transcription updates
-- `audioResult`: Delivers converted audio with British accent
-- `error`: Reports any errors during processing
+## Usage
+
+### Web Interface
+
+1. Click the "Start Recording" button
+2. Speak in your natural Indian English accent
+3. The system will transcribe your speech and convert it to British English accent in real-time
+4. The converted audio will play automatically
+
+### Command-line Validator
+
+For quick testing of the accent conversion idea, you can use the command-line validator:
+
+```bash
+# Run using npm script
+npm run validate
+
+# Or use the shell script (more user-friendly)
+./scripts/validate.sh
+```
+
+The command-line validator will:
+1. Listen to your microphone input
+2. Transcribe your speech in real-time
+3. Convert the transcription to British English speech
+4. Play the converted speech through your computer's speakers
+
+This is a great way to quickly validate the concept without setting up the web interface.
+
+### Troubleshooting
+
+If you encounter the error `Error: spawn rec ENOENT`, it means SoX is not installed or not in your PATH. See the "Installing SoX" section above.
 
 ## Development
 
-### Run Tests
-```
-npm test
-```
-
-## Technologies Used
-
-- Node.js and Express.js
-- Socket.IO for real-time communication
-- Web Audio API for audio capture and processing
-- Google Cloud Speech-to-Text API with streaming recognition
-- Google Cloud Text-to-Speech API
-- Jest for testing
-
-## Project Structure
+### Project Structure
 
 ```
-├── index.js                 # Application entry point
-├── public/                  # Static files
-│   └── index.html           # Frontend UI with real-time processing
+accent-conversion-ai/
+├── config/            # Configuration files and Google Cloud credentials
+├── public/            # Static files and frontend
+├── scripts/           # Utility scripts including validation tools
 ├── src/
-│   ├── controllers/         # API controllers
-│   │   ├── AccentController.js
-│   │   └── StreamingController.js
-│   ├── routes/              # API routes
-│   │   └── accentRoutes.js
-│   └── services/            # Business logic
-│       ├── AccentConversionService.js
-│       └── SpeechService.js
-├── test/                    # Test files
-├── uploads/                 # Uploaded audio files (for non-streaming mode)
-└── converted/               # Converted audio files (for non-streaming mode)
+│   ├── controllers/   # Request handlers
+│   ├── routes/        # API routes
+│   ├── services/      # Core services for speech processing
+├── index.js           # Entry point
+├── package.json       # Dependencies and scripts
 ```
+
+### Key Components
+
+- **StreamingAccentService**: Handles real-time accent conversion with streaming APIs
+- **StreamingController**: Manages WebSocket connections and audio streaming
+- **Frontend**: Browser client for recording and playback
+- **Validator Script**: Command-line tool for quick testing
+
+## Limitations and Future Work
+
+This MVP has the following limitations:
+
+- Processing delay depends on network conditions and API response times
+- Limited error handling and recovery
+- Basic UI with minimal feedback
+- No user settings or customization options
+
+Future improvements could include:
+
+- Support for multiple accent conversions
+- User-configurable accent settings
+- Improved audio quality and reduced latency
+- Better error handling and recovery
+- Enhanced visualizations and feedback
+- Mobile app support
 
 ## License
 

@@ -1,4 +1,4 @@
-const speechService = require('../services/SpeechService');
+const streamingAccentService = require('../services/StreamingAccentService');
 
 class StreamingController {
   constructor() {
@@ -47,22 +47,40 @@ class StreamingController {
    */
   startStreaming(socket) {
     try {
-      console.log('Starting streaming for client:', socket.id);
+      console.log('Starting streaming accent conversion for client:', socket.id);
       
-      // Store session data for the socket
-      const streamData = {
-        currentTranscription: '',
-        isFinal: false,
-        processingQueue: Promise.resolve(),
-        isProcessing: false,
-        audioBuffer: Buffer.alloc(0) // Initialize empty buffer for audio collection
-      };
+      // Create streaming session with callbacks
+      const streamingSession = streamingAccentService.createStreamingSession(
+        // Transcription callback
+        (transcriptionData) => {
+          socket.emit('transcript', transcriptionData);
+        },
+        // Audio result callback
+        (audioData) => {
+          socket.emit('audioResult', audioData);
+        },
+        // Error callback
+        (error) => {
+          this.handleApiError(socket, error);
+        }
+      );
       
-      this.activeStreams.set(socket.id, streamData);
+      if (streamingSession) {
+        // Store session for this socket
+        this.activeStreams.set(socket.id, {
+          streamingSession,
+          isActive: true
+        });
+        
+        // Emit ready event to client
+        socket.emit('streamingReady');
+      } else {
+        socket.emit('error', { 
+          message: 'Failed to start streaming session', 
+          details: 'Could not initialize speech recognition' 
+        });
+      }
             
-      // Emit ready event to client
-      socket.emit('streamingReady');
-      
     } catch (error) {
       console.error('Error starting streaming:', error);
       this.handleApiError(socket, error);
@@ -102,14 +120,14 @@ class StreamingController {
   }
 
   /**
-   * Processes audio data from client
+   * Processes audio data from client and sends it to the streaming session
    * @param {Object} socket - Socket connection
-   * @param {Object} data - Audio data
+   * @param {Object} data - Audio data (in base64 format)
    */
-  async processAudioData(socket, data) {
+  processAudioData(socket, data) {
     try {
       const streamData = this.activeStreams.get(socket.id);
-      if (!streamData) {
+      if (!streamData || !streamData.isActive) {
         console.error('No active stream for client:', socket.id);
         return;
       }
@@ -117,79 +135,11 @@ class StreamingController {
       // Convert base64 to buffer
       const audioBuffer = Buffer.from(data.audio, 'base64');
       
-      // Accumulate audio data
-      streamData.audioBuffer = Buffer.concat([streamData.audioBuffer, audioBuffer]);
+      // Send audio data to streaming session
+      streamData.streamingSession.writeAudio(audioBuffer);
       
-      // Only process if not already processing and we have enough data
-      if (!streamData.isProcessing && streamData.audioBuffer.length > 4000) {
-        streamData.isProcessing = true;
-        
-        // Process accumulated audio
-        const bufferToProcess = streamData.audioBuffer;
-        streamData.audioBuffer = Buffer.alloc(0); // Reset buffer
-        
-        try {
-          // Recognize speech in the audio buffer
-          const result = await speechService.recognizeSpeech(bufferToProcess);
-          
-          if (result && result.transcript) {
-            // Emit the transcript to the client
-            socket.emit('transcript', {
-              text: result.transcript,
-              isFinal: result.isFinal
-            });
-            
-            // Update current transcription
-            streamData.currentTranscription = result.transcript;
-            streamData.isFinal = result.isFinal;
-            
-            // If this is a final result, convert to speech with British accent
-            if (result.isFinal && result.transcript.trim() !== '') {
-              // Use the processing queue to ensure order
-              streamData.processingQueue = streamData.processingQueue
-                .then(() => this.convertToSpeech(socket, result.transcript))
-                .catch(err => {
-                  console.error('Error processing final transcript:', err);
-                  this.handleApiError(socket, err);
-                });
-            }
-          }
-        } catch (error) {
-          console.error('Error processing audio:', error);
-          this.handleApiError(socket, error);
-        } finally {
-          streamData.isProcessing = false;
-        }
-      }
     } catch (error) {
       console.error('Error processing audio data:', error);
-      this.handleApiError(socket, error);
-    }
-  }
-
-  /**
-   * Converts text to speech with British accent and sends to client
-   * @param {Object} socket - Socket connection
-   * @param {string} text - Text to convert
-   */
-  async convertToSpeech(socket, text) {
-    try {
-      // Skip if text is empty
-      if (!text || text.trim() === '') {
-        return;
-      }
-      
-      // Convert text to speech with British accent
-      const audioContent = await speechService.convertTextToSpeechStream(text);
-      
-      // Send audio to client
-      socket.emit('audioResult', {
-        audio: audioContent.toString('base64'),
-        text
-      });
-      
-    } catch (error) {
-      console.error('Error converting to speech:', error);
       this.handleApiError(socket, error);
     }
   }
@@ -201,8 +151,16 @@ class StreamingController {
   stopStreaming(socket) {
     try {
       const streamData = this.activeStreams.get(socket.id);
-      if (streamData) {
+      if (streamData && streamData.isActive) {
         console.log('Stopping streaming for client:', socket.id);
+        
+        // Close the streaming session
+        if (streamData.streamingSession) {
+          streamData.streamingSession.close();
+        }
+        
+        // Mark as inactive
+        streamData.isActive = false;
         
         // Remove from active streams
         this.activeStreams.delete(socket.id);
