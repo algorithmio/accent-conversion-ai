@@ -63,7 +63,7 @@ class StreamingAccentConverter {
       config: {
         encoding: 'MULAW',
         sampleRateHertz: 8000, // Twilio's sample rate
-        languageCode: 'en-IN',
+        languageCode: 'en-IN', // Indian English
         model: 'telephony',
         useEnhanced: true,
         enableAutomaticPunctuation: true,
@@ -74,7 +74,7 @@ class StreamingAccentConverter {
           },
         ],
       },
-      interimResults: false,
+      interimResults: false, // Only get final results for conversion
     };
   }
 
@@ -86,33 +86,51 @@ class StreamingAccentConverter {
   createStreamHandler(onTranscriptCallback) {
     // Last transcript for deduplication
     let lastTranscript = '';
+    let isStreamActive = true;
 
     // Create a recognition stream
     const recognizeStream = this.sttClient.streamingRecognize(this.createSTTConfig())
       .on('data', (data) => {
-        if (!data.results || !data.results[0]) return;
-        
-        const result = data.results[0];
-        if (!result.alternatives || !result.alternatives[0]) return;
-        
-        const transcript = result.alternatives[0].transcript;
-        
-        if (result.isFinal && transcript !== lastTranscript) {
-          logger.info(`Transcribed: ${transcript}`);
-          lastTranscript = transcript;
+        try {
+          if (!data.results || !data.results[0]) return;
           
-          // Call the callback with the transcript
-          if (onTranscriptCallback && typeof onTranscriptCallback === 'function') {
-            onTranscriptCallback(transcript);
+          const result = data.results[0];
+          if (!result.alternatives || !result.alternatives[0]) return;
+          
+          const transcript = result.alternatives[0].transcript;
+          
+          if (result.isFinal && transcript && transcript.trim() !== '' && transcript !== lastTranscript) {
+            logger.info(`Transcribed: ${transcript}`);
+            lastTranscript = transcript;
+            
+            // Call the callback with the transcript
+            if (onTranscriptCallback && typeof onTranscriptCallback === 'function') {
+              onTranscriptCallback(transcript);
+            }
           }
+        } catch (error) {
+          logger.error('Error processing recognition data:', error);
         }
       })
       .on('error', (error) => {
-        logger.error('Recognition error:', error.message);
+        logger.error('Recognition error:', error.message || error);
+        isStreamActive = false;
+        
+        // Try to recreate the stream after a short delay
+        setTimeout(() => {
+          if (onTranscriptCallback) {
+            logger.info('Attempting to recreate recognition stream...');
+            this.createStreamHandler(onTranscriptCallback);
+          }
+        }, 1000);
       })
       .on('end', () => {
-        logger.info('Speech recognition stream closed');
+        logger.info('Speech recognition stream ended');
+        isStreamActive = false;
       });
+
+    // Add a method to check if stream is active
+    recognizeStream.isActive = () => isStreamActive;
 
     return recognizeStream;
   }
@@ -162,8 +180,8 @@ class StreamingAccentConverter {
           ssmlGender: 'MALE' 
         },
         audioConfig: { 
-          audioEncoding: 'MP3',
-          sampleRateHertz: 24000,
+          audioEncoding: 'MULAW',  // MULAW format for Twilio compatibility
+          sampleRateHertz: 8000,   // Twilio's sample rate
           pitch: 0.0,
           speakingRate: 1.0
         },
@@ -174,62 +192,6 @@ class StreamingAccentConverter {
       logger.error('Error synthesizing speech:', error.message);
       return null;
     }
-  }
-
-  /**
-   * Generate a URL for TwiML to play converted audio
-   * @param {string} text - Text to convert
-   * @param {string} baseUrl - Base URL of the server
-   * @returns {Promise<string>} - URL to the audio file
-   */
-  async generateAudioUrl(text, baseUrl) {
-    try {
-      const audioContent = await this.convertTextToBritishAccent(text);
-      
-      if (audioContent) {
-        // Generate a unique filename
-        const filename = `converted_${Date.now()}.mp3`;
-        const filePath = await this.saveAudioToFile(audioContent, filename);
-        
-        // Create a URL pointing to this audio file
-        const audioUrl = `${baseUrl}/audio/${filename}`;
-        return audioUrl;
-      }
-      
-      return null;
-    } catch (error) {
-      logger.error('Error generating audio URL:', error);
-      return null;
-    }
-  }
-
-  /**
-   * Save audio buffer to a file
-   * @param {Buffer} audioBuffer - The audio buffer to save
-   * @param {string} filename - The filename to save to
-   * @returns {Promise<string>} - The path to the saved file
-   */
-  async saveAudioToFile(audioBuffer, filename) {
-    const outputDir = path.join(__dirname, '../../public/audio');
-    
-    // Ensure output directory exists
-    if (!fs.existsSync(outputDir)) {
-      fs.mkdirSync(outputDir, { recursive: true });
-    }
-    
-    const outputFile = path.join(outputDir, filename);
-    
-    return new Promise((resolve, reject) => {
-      fs.writeFile(outputFile, audioBuffer, (err) => {
-        if (err) {
-          logger.error('Error saving audio file:', err);
-          reject(err);
-        } else {
-          logger.info(`Audio saved to ${outputFile}`);
-          resolve(outputFile);
-        }
-      });
-    });
   }
 }
 

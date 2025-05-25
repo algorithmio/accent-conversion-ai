@@ -1,137 +1,309 @@
 require('dotenv').config();
 const express = require('express');
+const expressWs = require('express-ws');
 const VoiceResponse = require('twilio').twiml.VoiceResponse;
-const AccentConverterService = require('./src/services/AccentConverterService');
-const logger = require('./src/utils/logger');
+const speech = require('@google-cloud/speech').v1p1beta1;
+const textToSpeech = require('@google-cloud/text-to-speech');
+const path = require('path');
+const fs = require('fs');
 
+// Initialize Express app with WebSocket support
 const app = express();
-const PORT = process.env.PORT || 3000;
+const server = require('http').createServer(app);
+expressWs(app, server);
+const PORT = process.env.PORT || 4001;
 
-// Middleware
+// Initialize Google Cloud clients
+let sttClient, ttsClient;
+
+try {
+  const credentialsPath = path.join(__dirname, 'config/creds.json');
+  
+  if (fs.existsSync(credentialsPath)) {
+    console.log('✅ Using Google Cloud credentials from config/creds.json');
+    sttClient = new speech.SpeechClient({ keyFilename: credentialsPath });
+    ttsClient = new textToSpeech.TextToSpeechClient({ keyFilename: credentialsPath });
+  } else {
+    console.log('❌ No credentials file found at config/creds.json');
+    console.log('📝 Please create config/creds.json with your Google Cloud service account credentials');
+    console.log('📋 You can use config/creds.json.template as a reference');
+    console.log('🔗 Get credentials from: https://console.cloud.google.com/iam-admin/serviceaccounts');
+    console.log('⚠️  Make sure to enable Speech-to-Text and Text-to-Speech APIs');
+    process.exit(1);
+  }
+} catch (error) {
+  console.error('❌ Error initializing Google Cloud clients:', error.message);
+  console.log('📝 Please check your config/creds.json file format');
+  process.exit(1);
+}
+
+// Configure middleware
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
-// Initialize the accent converter service
-const accentConverter = AccentConverterService.getInstance();
+// Store active connections
+const activeConnections = new Map();
 
-// Welcome endpoint
+// Main page
 app.get('/', (req, res) => {
-  res.send('Accent Conversion Server is running!');
+  res.send('Real-time Accent Conversion Server is running!');
 });
 
 // Handle incoming voice calls
 app.post('/voice', (req, res) => {
-  logger.info(`Incoming call from: ${req.body.From}`);
+  const callSid = req.body.CallSid;
+  console.log(`Incoming call: ${callSid}`);
   
   const twiml = new VoiceResponse();
   
-  // Add welcome message
-  twiml.say({
-    voice: 'Polly.Brian-Neural',
-    language: 'en-GB'
-  }, 'Welcome to the Accent Converter. Please speak after the beep.');
-  
-  // Add a beep
-  twiml.play({ digits: '1' });
-  
-  // Start recording and convert speech
-  twiml.record({
-    action: '/process-speech',
-    transcribeCallback: '/transcribe',
-    maxLength: 30,
-    transcribe: true,
-    transcribeLanguage: 'en-IN',
-    playBeep: true
+  // Brief welcome
+  twiml.say('Ready. Speak now.');
+
+  // Use Connect Stream for bidirectional streaming
+  const connect = twiml.connect();
+  connect.stream({
+    url: `wss://${req.get('host')}/stream`
   });
-  
+
   res.type('text/xml');
   res.send(twiml.toString());
 });
 
-// Process transcribed speech
-app.post('/transcribe', async (req, res) => {
-  const transcription = req.body.TranscriptionText;
-  logger.info(`Transcription received: ${transcription}`);
+// WebSocket endpoint for media streaming
+app.ws('/stream', (ws, req) => {
+  console.log('New WebSocket connection');
   
-  // Store transcription for processing
-  if (transcription) {
-    // We'll just acknowledge this webhook
-    res.sendStatus(200);
-  } else {
-    logger.error('No transcription received');
-    res.sendStatus(400);
-  }
-});
+  let callSid = null;
+  let streamSid = null;
+  let recognizeStream = null;
+  let audioChunks = [];
+  let isConverting = false;
+  let streamDestroyed = false;
 
-// Process speech recording
-app.post('/process-speech', async (req, res) => {
-  const recordingUrl = req.body.RecordingUrl;
-  const callSid = req.body.CallSid;
-  
-  logger.info(`Processing speech for call: ${callSid}`);
-  logger.info(`Recording URL: ${recordingUrl}`);
-  
-  const twiml = new VoiceResponse();
-  
-  try {
-    // For the MVP, we'll use Twilio's transcription and then TTS for British accent
-    const transcription = req.body.TranscriptionText;
-    
-    if (transcription) {
-      logger.info(`Using transcription: ${transcription}`);
-      
-      // Process the transcription through our accent converter
-      const convertedAudio = await accentConverter.convertTextToBritishAccent(transcription);
-      
-      // If we have audio data, we can play it directly in the response
-      if (convertedAudio) {
-        // For now, we'll use Twilio's TTS with British voice
-        twiml.say({
-          voice: 'Polly.Brian-Neural',
-          language: 'en-GB'
-        }, transcription);
-      } else {
-        // Fallback if conversion failed
-        twiml.say('I apologize, but I was unable to convert your accent.');
+  // Function to create a new recognition stream
+  function createRecognitionStream() {
+    if (recognizeStream && !streamDestroyed) {
+      try {
+        recognizeStream.end();
+      } catch (error) {
+        console.log('Error ending previous stream:', error.message);
       }
-    } else {
-      twiml.say('I apologize, but I could not understand what you said.');
+    }
+
+    streamDestroyed = false;
+    
+    recognizeStream = sttClient.streamingRecognize({
+      config: {
+        encoding: 'MULAW',
+        sampleRateHertz: 8000,
+        languageCode: 'en-IN',
+        model: 'telephony',
+        useEnhanced: true,
+        enableAutomaticPunctuation: true
+      },
+      interimResults: false
+    });
+
+    recognizeStream.on('data', async (data) => {
+      if (data.results && data.results[0] && data.results[0].isFinal) {
+        const transcript = data.results[0].alternatives[0].transcript;
+        console.log(`Transcribed: "${transcript}"`);
+        
+        if (transcript && transcript.trim() && !isConverting) {
+          isConverting = true;
+          
+          // Small delay to ensure user has finished speaking
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
+          await convertAndSendAudio(transcript, ws, streamSid);
+          isConverting = false;
+        }
+      }
+    });
+
+    recognizeStream.on('error', (error) => {
+      console.error('Recognition error:', error.message);
+      streamDestroyed = true;
+      
+      // Recreate stream after a delay if connection is still active
+      setTimeout(() => {
+        if (activeConnections.has(callSid) && !streamDestroyed) {
+          console.log('Recreating recognition stream...');
+          createRecognitionStream();
+        }
+      }, 2000);
+    });
+
+    recognizeStream.on('end', () => {
+      console.log('Recognition stream ended');
+      streamDestroyed = true;
+    });
+
+    recognizeStream.on('close', () => {
+      console.log('Recognition stream closed');
+      streamDestroyed = true;
+    });
+
+    return recognizeStream;
+  }
+
+  ws.on('message', async (message) => {
+    try {
+      const msg = JSON.parse(message);
+      
+      // Debug: Log all incoming messages
+      if (msg.event !== 'media') {
+        console.log(`📨 Received: ${msg.event}`, msg.event === 'start' ? `CallSid: ${msg.start?.callSid}` : '');
+      }
+      
+      switch (msg.event) {
+        case 'start':
+          callSid = msg.start.callSid;
+          streamSid = msg.start.streamSid;
+          console.log(`🎙️  Stream started: ${callSid}`);
+          
+          activeConnections.set(callSid, { ws, streamSid });
+          
+          // Create initial recognition stream
+          createRecognitionStream();
+          
+          break;
+
+        case 'media':
+          if (recognizeStream && !streamDestroyed && msg.media && msg.media.payload) {
+            const audioData = Buffer.from(msg.media.payload, 'base64');
+            
+            // Accumulate audio chunks
+            audioChunks.push(audioData);
+            
+            // Send audio to recognition every 500ms worth of data
+            if (audioChunks.length >= 20) { // ~500ms at 8kHz
+              const combinedAudio = Buffer.concat(audioChunks);
+              audioChunks = [];
+              
+              try {
+                // Check if stream is still writable before writing
+                if (recognizeStream && !streamDestroyed && recognizeStream.writable) {
+                  recognizeStream.write(combinedAudio);
+                } else {
+                  console.log('Stream not writable, recreating...');
+                  createRecognitionStream();
+                }
+              } catch (error) {
+                console.error('Error writing to recognition stream:', error.message);
+                streamDestroyed = true;
+                createRecognitionStream();
+              }
+            }
+          }
+          break;
+
+        case 'stop':
+          console.log(`🛑 Stream stopped: ${callSid}`);
+          streamDestroyed = true;
+          if (recognizeStream) {
+            try {
+              recognizeStream.end();
+            } catch (error) {
+              console.log('Error ending stream on stop:', error.message);
+            }
+          }
+          activeConnections.delete(callSid);
+          break;
+      }
+    } catch (error) {
+      console.error('Error processing message:', error);
+    }
+  });
+
+  ws.on('close', () => {
+    console.log(`WebSocket closed: ${callSid}`);
+    streamDestroyed = true;
+    
+    if (recognizeStream) {
+      try {
+        recognizeStream.end();
+      } catch (error) {
+        console.log('Error ending stream on close:', error.message);
+      }
     }
     
-    // Add option to record again
-    twiml.gather({
-      numDigits: 1,
-      action: '/handle-key',
-      timeout: 10
-    }).say('Press 1 to speak again, or any other key to end the call.');
+    if (callSid) {
+      activeConnections.delete(callSid);
+    }
+  });
+
+  ws.on('error', (error) => {
+    console.error('WebSocket error:', error);
+    streamDestroyed = true;
+  });
+});
+
+// Function to convert text to British accent and send back
+async function convertAndSendAudio(text, ws, streamSid) {
+  try {
+    console.log(`Converting to British accent: "${text}"`);
+    
+    // Check if WebSocket is still open
+    if (ws.readyState !== ws.OPEN) {
+      console.log('WebSocket not open, skipping audio send');
+      return;
+    }
+    
+    // Convert to British English speech
+    const [response] = await ttsClient.synthesizeSpeech({
+      input: { text },
+      voice: { 
+        languageCode: 'en-GB', 
+        name: 'en-GB-Neural2-B',
+        ssmlGender: 'MALE' 
+      },
+      audioConfig: { 
+        audioEncoding: 'MULAW',
+        sampleRateHertz: 8000
+      }
+    });
+    
+    if (response.audioContent && ws.readyState === ws.OPEN) {
+      console.log(`Audio content size: ${response.audioContent.length} bytes`);
+      
+      // For bidirectional streams, send the entire audio as one message
+      const audioBase64 = response.audioContent.toString('base64');
+      
+      // Correct message format for bidirectional streams
+      const mediaMessage = {
+        event: 'media',
+        streamSid: streamSid,
+        media: {
+          payload: audioBase64
+        }
+      };
+      
+      try {
+        ws.send(JSON.stringify(mediaMessage));
+        console.log(`✅ Sent British accent audio for: "${text}"`);
+      } catch (wsError) {
+        console.error('Error sending WebSocket message:', wsError.message);
+      }
+    } else {
+      console.log('No audio content or WebSocket closed');
+    }
   } catch (error) {
-    logger.error('Error processing speech:', error);
-    twiml.say('I apologize, but there was an error processing your speech.');
-    twiml.hangup();
+    console.error('Error converting audio:', error.message);
   }
-  
-  res.type('text/xml');
-  res.send(twiml.toString());
+}
+
+// Health check
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'healthy',
+    activeConnections: activeConnections.size
+  });
 });
 
-// Handle keypress for recording again or ending call
-app.post('/handle-key', (req, res) => {
-  const digit = req.body.Digits;
-  const twiml = new VoiceResponse();
-  
-  if (digit === '1') {
-    // Redirect to voice endpoint to record again
-    twiml.redirect('/voice');
-  } else {
-    twiml.say('Thank you for using the Accent Converter. Goodbye!');
-    twiml.hangup();
-  }
-  
-  res.type('text/xml');
-  res.send(twiml.toString());
-});
-
-// Start the server
-app.listen(PORT, () => {
-  logger.info(`Accent Conversion Server running on port ${PORT}`);
+// Start server
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Webhook URL: https://your-ngrok-url.ngrok.io/voice`);
+  console.log(`Health check: http://localhost:${PORT}/health`);
 }); 
