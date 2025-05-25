@@ -1,160 +1,112 @@
-# Real-time Accent Conversion
+# Accent Conversion Server
 
-A real-time accent conversion system that converts Indian English accent to British English accent.
-
-## Overview
-
-This MVP demonstrates real-time accent conversion using streaming speech-to-text and text-to-speech technologies. The application allows users to speak in their natural Indian English accent, and the system converts it to British English accent in real-time.
-
-## How it Works
-
-1. The user speaks into their microphone
-2. The audio is streamed to the server in real-time
-3. The server uses Google Cloud Speech-to-Text API to transcribe the Indian English speech
-4. The transcription is then converted to British English speech using Google Cloud Text-to-Speech API
-5. The converted audio is streamed back to the client and played
+A Twilio-powered application that converts Indian English accents to British English in real-time during phone calls.
 
 ## Features
 
-- Real-time streaming audio processing
-- Low-latency accent conversion
-- Support for continuous speech
-- Browser-based client with simple UI
-- Command-line validator for quick testing
+- Receive phone calls via a Twilio number
+- Transcribe Indian English speech to text using Google Cloud Speech-to-Text
+- Convert text to British English voice using Google Cloud Text-to-Speech
+- Play converted speech back to the caller
+- Supports both recorded audio (simple mode) and real-time streaming (advanced mode)
+- WebSocket support using express-ws for real-time communication
 
-## Technical Architecture
+## Prerequisites
 
-- **Backend**: Node.js with Express
-- **Real-time Communication**: Socket.io for bidirectional streaming
-- **Speech Services**: Google Cloud Speech-to-Text and Text-to-Speech APIs
-- **Frontend**: HTML, CSS, JavaScript
-
-## Setup and Installation
-
-### Prerequisites
-
-- Node.js (v14 or later)
+- Node.js (v14 or higher)
+- npm or yarn
+- A Twilio account with a phone number
 - Google Cloud Platform account with Speech-to-Text and Text-to-Speech APIs enabled
-- Google Cloud credentials
-- SoX (Sound eXchange) for command-line validation tool
 
-### Installing SoX (required for command-line validator)
+## Setup
 
-SoX is required for the command-line validator as it provides audio capture capabilities.
+1. Clone the repository:
 
-**On macOS:**
 ```bash
-brew install sox
+git clone https://github.com/your-username/accent-conversion-ai.git
+cd accent-conversion-ai
 ```
 
-**On Ubuntu/Debian:**
+2. Install dependencies:
+
 ```bash
-sudo apt-get install sox libsox-fmt-all
+npm install
 ```
 
-**On Windows:**
-- Download from [SoX website](http://sox.sourceforge.net/)
-- Or install with Chocolatey: `choco install sox.portable`
-- Make sure to add SoX to your PATH environment variable
-
-### Environment Variables
+3. Set up environment variables:
 
 Create a `.env` file in the root directory with the following variables:
 
 ```
-GOOGLE_API_KEY=your_google_api_key
 PORT=3000
+TWILIO_ACCOUNT_SID=your_twilio_account_sid
+TWILIO_AUTH_TOKEN=your_twilio_auth_token
+GOOGLE_API_KEY=your_google_api_key
 ```
 
-Alternatively, you can use a service account by placing your `creds.json` file in the `config` directory.
+Alternatively, you can provide Google Cloud credentials in `config/creds.json`.
 
-### Installation
+4. Start the server:
 
-1. Clone the repository
-2. Install dependencies:
-   ```
-   npm install
-   ```
-3. Start the server:
-   ```
-   npm start
-   ```
-4. Open your browser and navigate to `http://localhost:3000`
-
-## Usage
-
-### Web Interface
-
-1. Click the "Start Recording" button
-2. Speak in your natural Indian English accent
-3. The system will transcribe your speech and convert it to British English accent in real-time
-4. The converted audio will play automatically
-
-### Command-line Validator
-
-For quick testing of the accent conversion idea, you can use the command-line validator:
+### Simple Mode (Record and Convert)
 
 ```bash
-# Run using npm script
-npm run validate
-
-# Or use the shell script (more user-friendly)
-./scripts/validate.sh
+npm start
 ```
 
-The command-line validator will:
-1. Listen to your microphone input
-2. Transcribe your speech in real-time
-3. Convert the transcription to British English speech
-4. Play the converted speech through your computer's speakers
+### Advanced Mode (Real-time Streaming)
 
-This is a great way to quickly validate the concept without setting up the web interface.
-
-### Troubleshooting
-
-If you encounter the error `Error: spawn rec ENOENT`, it means SoX is not installed or not in your PATH. See the "Installing SoX" section above.
-
-## Development
-
-### Project Structure
-
-```
-accent-conversion-ai/
-├── config/            # Configuration files and Google Cloud credentials
-├── public/            # Static files and frontend
-├── scripts/           # Utility scripts including validation tools
-├── src/
-│   ├── controllers/   # Request handlers
-│   ├── routes/        # API routes
-│   ├── services/      # Core services for speech processing
-├── index.js           # Entry point
-├── package.json       # Dependencies and scripts
+```bash
+npm run start:advanced
 ```
 
-### Key Components
+## Twilio Configuration
 
-- **StreamingAccentService**: Handles real-time accent conversion with streaming APIs
-- **StreamingController**: Manages WebSocket connections and audio streaming
-- **Frontend**: Browser client for recording and playback
-- **Validator Script**: Command-line tool for quick testing
+1. Set up your Twilio phone number to use a webhook for incoming calls.
+2. For the "A Call Comes In" webhook, use your server's URL:
+   - Simple mode: `https://your-server.com/voice-simple`
+   - Advanced mode: `https://your-server.com/voice`
 
-## Limitations and Future Work
+Note: Your server needs to be accessible via HTTPS for Twilio to connect to it. Use a service like ngrok for local development.
 
-This MVP has the following limitations:
+## Using ngrok for Local Development
 
-- Processing delay depends on network conditions and API response times
-- Limited error handling and recovery
-- Basic UI with minimal feedback
-- No user settings or customization options
+1. Install ngrok:
 
-Future improvements could include:
+```bash
+npm install -g ngrok
+```
 
-- Support for multiple accent conversions
-- User-configurable accent settings
-- Improved audio quality and reduced latency
-- Better error handling and recovery
-- Enhanced visualizations and feedback
-- Mobile app support
+2. Start your server locally:
+
+```bash
+npm start
+```
+
+3. In another terminal, start ngrok:
+
+```bash
+ngrok http 3000
+```
+
+4. Use the provided HTTPS URL from ngrok in your Twilio webhook configuration.
+
+## WebSocket Endpoints
+
+The advanced server provides two WebSocket endpoints:
+
+- `/media-stream` - Used by Twilio for streaming audio data
+- `/ui-client` - For UI clients to monitor and display transcriptions
+
+## Project Structure
+
+- `server.js` - Main server file (simple record and convert mode)
+- `server-advanced.js` - Advanced server with WebSocket streaming support
+- `src/services/` - Core service classes
+  - `AccentConverterService.js` - Handles text-to-speech conversion
+  - `StreamingAccentConverter.js` - Handles real-time streaming
+- `src/utils/` - Utility functions
+  - `logger.js` - Logging utility
 
 ## License
 
