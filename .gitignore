@@ -7,4 +7,4 @@ uploads/
 converted/
 *.wav
 *.mp3
-*.json 
+creds.json 
