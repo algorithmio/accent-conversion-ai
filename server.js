@@ -201,15 +201,12 @@ app.ws("/stream", (ws, req) => {
         if (isFinal) {
           // Reset for next speech segment
           const fullFinalTranscript = transcript; // Store the complete final transcript
-          previousInterimText = ""; // Reset previousInterimText as we are processing a final
           isInitialPhaseComplete = false;
 
           // Process final result if it's meaningful
           if (
             fullFinalTranscript &&
-            fullFinalTranscript.trim() &&
-            confidence &&
-            confidence > 0.7
+            fullFinalTranscript.trim()
           ) {
             // Compare the full final transcript with the last *successfully converted* text
             // This ensures we only process truly new information or significant corrections
@@ -925,18 +922,8 @@ async function convertAndSendAudio(text, ws, streamSid, startTime, isFinal) {
     // Convert to British English speech with optimized settings
     const [response] = await ttsClient.synthesizeSpeech({
       input: { text },
-      voice: {
-        languageCode: "en-GB",
-        name: "en-GB-Neural2-B",
-        ssmlGender: "MALE",
-      },
-      audioConfig: {
-        audioEncoding: "MULAW",
-        sampleRateHertz: 8000,
-        speakingRate: 1.0, // Normal speed for natural conversation
-        pitch: 0.0,
-        volumeGainDb: 2.0, // Slightly louder for clarity
-      },
+      voice: TTS_CONFIG.voice,
+      audioConfig: TTS_CONFIG.streamingAudioConfig,
     });
     const ttsEndTime = Date.now();
     const ttsLatency = ttsEndTime - conversionStartTime;
