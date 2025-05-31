@@ -11,101 +11,49 @@ const fs = require("fs");
 const StreamingAccentConverterV2 = require("./src/services/StreamingAccentConverterV2");
 const { TTS_CONFIG } = require("./src/config/tts-config");
 
+const PORT = process.env.PORT || 4001;
+
 // Initialize Express app with WebSocket support
 const app = express();
 const server = require("http").createServer(app);
 expressWs(app, server);
-const PORT = process.env.PORT || 4001;
-
-// Initialize Google Cloud clients
-let sttClient, ttsClient;
-
-try {
-  const credentialsPath = path.join(__dirname, "config/creds.json");
-
-  if (fs.existsSync(credentialsPath)) {
-    console.log("✅ Using Google Cloud credentials from config/creds.json");
-    sttClient = new speech.SpeechClient({ keyFilename: credentialsPath });
-    ttsClient = new textToSpeech.TextToSpeechClient({
-      keyFilename: credentialsPath,
-    });
-  } else {
-    console.log("❌ No credentials file found at config/creds.json");
-    console.log(
-      "📝 Please create config/creds.json with your Google Cloud service account credentials"
-    );
-    process.exit(1);
-  }
-} catch (error) {
-  console.error("❌ Error initializing Google Cloud clients:", error.message);
-  console.log("📝 Please check your config/creds.json file format");
-  process.exit(1);
-}
-
-// Add a global cache for TTS results to speed up repeated conversions
-const ttsCache = new Map();
-
-// Prewarm the TTS client to reduce first-call latency
-ttsClient.synthesizeSpeech({
-  input: { text: 'warmup' },
-  voice: {
-    languageCode: "en-GB",
-    name: "en-GB-Neural2-B",
-    ssmlGender: "MALE",
-  },
-  audioConfig: {
-    audioEncoding: "MULAW",
-    sampleRateHertz: 8000,
-    speakingRate: 1.0,
-    pitch: 0.0,
-    volumeGainDb: 2.0,
-  },
-}).then(() => {
-  console.log("TTS client warmed up");
-}).catch((err) => {
-  console.error("TTS warmup failed", err);
-});
-
-// Initialize streaming accent converter if enabled
-let streamingAccentConverter;
-try {
-  streamingAccentConverter = new StreamingAccentConverterV2();
-  console.log("🎵 Streaming TTS enabled - using StreamingAccentConverterV2");
-
-  // Setup error handling for streaming converter
-  streamingAccentConverter.on("error", (errorData) => {
-    console.error(
-      `❌ StreamingAccentConverter error for session ${errorData.sessionId}:`,
-      errorData.error.message
-    );
-  });
-
-  streamingAccentConverter.on("sessionClosed", (data) => {
-    console.log(
-      `📊 StreamingAccentConverter session ${data.callSid} closed:`,
-      data.metrics
-    );
-  });
-
-  // Setup cleanup interval for inactive sessions
-  setInterval(() => {
-    streamingAccentConverter.cleanupInactiveSessions();
-  }, Math.min(60000, TTS_CONFIG.streaming.maxInactiveTimeMs / 5)); // Check every minute or 1/5 of max inactive time, whichever is smaller
-} catch (error) {
-  console.error(
-    "❌ Error initializing StreamingAccentConverterV2:",
-    error.message
-  );
-  console.log("⚠️  Falling back to legacy TTS implementation");
-  streamingAccentConverter = null;
-}
-
-// Configure middleware
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
+// Initialize Google Cloud clients
+let sttClient, ttsClient;
+// Add a global cache for TTS results to speed up repeated conversions
+const ttsCache = new Map();
 // Store active connections
 const activeConnections = new Map();
+
+const credentialsPath = path.join(__dirname, "config/creds.json");
+
+if (fs.existsSync(credentialsPath)) {
+  console.log("✅ Using Google Cloud credentials from config/creds.json");
+  sttClient = new speech.SpeechClient({ keyFilename: credentialsPath });
+  ttsClient = new textToSpeech.TextToSpeechClient({
+    keyFilename: credentialsPath,
+  });
+} else {
+  console.log("❌ No credentials file found at config/creds.json");
+  console.log(
+    "📝 Please create config/creds.json with your Google Cloud service account credentials"
+  );
+  process.exit(1);
+}
+
+
+// Initialize streaming accent converter if enabled
+let streamingAccentConverter = new StreamingAccentConverterV2();
+
+// Setup error handling for streaming converter
+streamingAccentConverter.on("error", (errorData) => {
+  console.error(
+    `❌ StreamingAccentConverter error for session ${errorData.sessionId}:`,
+    errorData.error.message
+  );
+});
 
 // Handle incoming voice calls
 app.post("/voice", (req, res) => {
@@ -115,7 +63,7 @@ app.post("/voice", (req, res) => {
   const twiml = new VoiceResponse();
 
   // Brief welcome
-  twiml.say("Welcome to Accent Converter AI. Speak now.");
+  twiml.say("Welcome to Accent Conversion AI. Speak now.");
 
   // Use Connect Stream for bidirectional streaming
   const connect = twiml.connect();
@@ -129,7 +77,6 @@ app.post("/voice", (req, res) => {
 
 // WebSocket endpoint for media streaming
 app.ws("/stream", (ws, req) => {
-  console.log("New WebSocket connection");
   let conversionState = { current: 0 };
   ws.conversionState = conversionState;
 
@@ -178,7 +125,11 @@ app.ws("/stream", (ws, req) => {
     recognizeStream.on("data", async (data) => {
       const sttDataReceivedTime = Date.now(); // Timestamp for STT data reception
       if (data.results && data.results[0] && data.results[0].alternatives[0]) {
-        console.log(`[${new Date().toISOString()}] STT data received (processing took ${sttDataReceivedTime - lastAudioSentTime}ms since last audio batch sent)`); // Crude latency check
+        console.log(
+          `[${new Date().toISOString()}] STT data received (processing took ${
+            sttDataReceivedTime - lastAudioSentTime
+          }ms since last audio batch sent)`
+        ); // Crude latency check
         console.log("data", data.results[0].alternatives[0]);
         const transcript = data.results[0].alternatives[0].transcript;
         const isFinal = data.results[0].isFinal;
@@ -204,10 +155,7 @@ app.ws("/stream", (ws, req) => {
           isInitialPhaseComplete = false;
 
           // Process final result if it's meaningful
-          if (
-            fullFinalTranscript &&
-            fullFinalTranscript.trim()
-          ) {
+          if (fullFinalTranscript && fullFinalTranscript.trim()) {
             // Compare the full final transcript with the last *successfully converted* text
             // This ensures we only process truly new information or significant corrections
             const newContent = extractNewContentAdvanced(
@@ -318,11 +266,14 @@ app.ws("/stream", (ws, req) => {
     if (!isInitialPhaseComplete) {
       // wordBuffer = words; // wordBuffer seems unused for gating logic now
 
-      if (words.length >= 1) { // Changed from 3 to 1 for faster initial response
+      if (words.length >= 1) {
+        // Changed from 3 to 1 for faster initial response
         isInitialPhaseComplete = true;
         previousInterimText = transcript;
 
-        console.log(`🚀 STREAMING INITIAL PHASE COMPLETE: "${transcript}" (${words.length} word(s))`);
+        console.log(
+          `🚀 STREAMING INITIAL PHASE COMPLETE: "${transcript}" (${words.length} word(s))`
+        );
 
         // Send initial phrase to streaming TTS
         try {
@@ -342,7 +293,9 @@ app.ws("/stream", (ws, req) => {
           await processIncrementalContent(transcript, false);
         }
       } else {
-        console.log(`⏳ Streaming: Waiting for more words: ${words.length}/1 - "${transcript}"`);
+        console.log(
+          `⏳ Streaming: Waiting for more words: ${words.length}/1 - "${transcript}"`
+        );
       }
       return;
     }
@@ -444,18 +397,29 @@ app.ws("/stream", (ws, req) => {
 
             if (!firstAudioChunkSentToStt) {
               // For the very first audio chunk, send it immediately to STT
-              console.log("🚀 Sending first audio chunk immediately to STT to reduce initial latency.");
+              console.log(
+                "🚀 Sending first audio chunk immediately to STT to reduce initial latency."
+              );
               try {
-                if (recognizeStream && !streamDestroyed && recognizeStream.writable) {
+                if (
+                  recognizeStream &&
+                  !streamDestroyed &&
+                  recognizeStream.writable
+                ) {
                   recognizeStream.write(audioData);
                   firstAudioChunkSentToStt = true; // Set the flag after sending
                 } else {
-                  console.log('⚠️ STT stream not writable for the first chunk. Buffering it.');
+                  console.log(
+                    "⚠️ STT stream not writable for the first chunk. Buffering it."
+                  );
                   // If stream isn't ready, buffer it to be sent with the next batch logic
                   audioChunks.push(audioData);
                 }
               } catch (error) {
-                console.error('❌ Error writing first audio chunk to STT stream:', error.message);
+                console.error(
+                  "❌ Error writing first audio chunk to STT stream:",
+                  error.message
+                );
                 streamDestroyed = true; // Mark stream as needing recreation
                 createRecognitionStream(); // Attempt to recreate
                 audioChunks.push(audioData); // Buffer it as a fallback
@@ -469,16 +433,33 @@ app.ws("/stream", (ws, req) => {
                 audioChunks = []; // Clear chunks after combining
 
                 try {
-                  if (recognizeStream && !streamDestroyed && recognizeStream.writable) {
+                  if (
+                    recognizeStream &&
+                    !streamDestroyed &&
+                    recognizeStream.writable
+                  ) {
                     recognizeStream.write(combinedAudio);
                     lastAudioSentTime = Date.now(); // Update timestamp after successful write
                   } else {
-                    console.log('⚠️ STT stream not writable for batched audio. Re-queuing batch.');
-                    audioChunks.unshift(...Buffer.isBuffer(combinedAudio) ? [combinedAudio] : combinedAudio); // Prepend batch to be retried
+                    console.log(
+                      "⚠️ STT stream not writable for batched audio. Re-queuing batch."
+                    );
+                    audioChunks.unshift(
+                      ...(Buffer.isBuffer(combinedAudio)
+                        ? [combinedAudio]
+                        : combinedAudio)
+                    ); // Prepend batch to be retried
                   }
                 } catch (error) {
-                  console.error('❌ Error writing batched audio to STT stream:', error.message);
-                  audioChunks.unshift(...Buffer.isBuffer(combinedAudio) ? [combinedAudio] : combinedAudio); // Prepend batch to be retried
+                  console.error(
+                    "❌ Error writing batched audio to STT stream:",
+                    error.message
+                  );
+                  audioChunks.unshift(
+                    ...(Buffer.isBuffer(combinedAudio)
+                      ? [combinedAudio]
+                      : combinedAudio)
+                  ); // Prepend batch to be retried
                   streamDestroyed = true;
                   createRecognitionStream();
                 }
@@ -513,6 +494,11 @@ app.ws("/stream", (ws, req) => {
           }
 
           activeConnections.delete(callSid);
+
+          // Cleanup inactive sessions when a call disconnects
+          if (streamingAccentConverter) {
+            streamingAccentConverter.cleanupInactiveSessions();
+          }
           break;
       }
     } catch (error) {
@@ -551,6 +537,11 @@ app.ws("/stream", (ws, req) => {
     if (callSid) {
       activeConnections.delete(callSid);
     }
+
+    // Cleanup inactive sessions when WebSocket closes
+    if (streamingAccentConverter) {
+      streamingAccentConverter.cleanupInactiveSessions();
+    }
   });
 
   ws.on("error", (error) => {
@@ -571,6 +562,11 @@ app.ws("/stream", (ws, req) => {
         );
       }
       streamingSession = null;
+    }
+
+    // Cleanup inactive sessions when WebSocket errors
+    if (streamingAccentConverter) {
+      streamingAccentConverter.cleanupInactiveSessions();
     }
   });
 
@@ -714,18 +710,23 @@ app.ws("/stream", (ws, req) => {
     // Phase 1: Wait for initial 3-4 words (reduced from 4-5 for faster response)
     if (!isInitialPhaseComplete) {
       // wordBuffer = words; // wordBuffer seems unused for gating logic now
-      
-      if (words.length >= 1) { // Changed from 3 to 1 for faster initial response
+
+      if (words.length >= 1) {
+        // Changed from 3 to 1 for faster initial response
         isInitialPhaseComplete = true;
         previousInterimText = transcript;
-        
-        console.log(`🚀 LEGACY INITIAL PHASE COMPLETE: "${transcript}" (${words.length} word(s))`);
+
+        console.log(
+          `🚀 LEGACY INITIAL PHASE COMPLETE: "${transcript}" (${words.length} word(s))`
+        );
         console.log(`📝 Starting incremental streaming...`);
-        
+
         // Convert the initial phrase
         await processIncrementalContent(transcript, false);
       } else {
-        console.log(`⏳ Legacy: Waiting for more words: ${words.length}/1 - "${transcript}"`);
+        console.log(
+          `⏳ Legacy: Waiting for more words: ${words.length}/1 - "${transcript}"`
+        );
       }
       return;
     }
@@ -753,9 +754,13 @@ app.ws("/stream", (ws, req) => {
 
   // Extract new content by comparing current with previous (advanced version)
   function extractNewContentAdvanced(currentText, previousText) {
-    console.log(`[extractNewContentAdvanced INPUTS] Current: "${currentText}", Previous: "${previousText}"`);
+    console.log(
+      `[extractNewContentAdvanced INPUTS] Current: "${currentText}", Previous: "${previousText}"`
+    );
     if (!previousText || previousText.trim() === "") {
-      console.log(`[extractNewContentAdvanced OUTPUT] New Content (no previous): "${currentText}"`);
+      console.log(
+        `[extractNewContentAdvanced OUTPUT] New Content (no previous): "${currentText}"`
+      );
       return currentText;
     }
 
@@ -800,15 +805,23 @@ app.ws("/stream", (ws, req) => {
 
     if (newWords.length > 0) {
       const newContent = newWords.join(" ");
-      console.log(`🔍 Advanced diff: commonPrefix=${commonPrefixLength} (based on cleaned words), newWords=${newWords.length}, content="${newContent}"`);
-      console.log(`[extractNewContentAdvanced OUTPUT] New Content: "${newContent}"`);
+      console.log(
+        `🔍 Advanced diff: commonPrefix=${commonPrefixLength} (based on cleaned words), newWords=${newWords.length}, content="${newContent}"`
+      );
+      console.log(
+        `[extractNewContentAdvanced OUTPUT] New Content: "${newContent}"`
+      );
       return newContent;
     }
 
     // Check if current text is shorter (word was removed/corrected) - using original word counts
     if (currentOriginalWords.length < previousOriginalWords.length) {
-      console.log(`🔄 Advanced diff: Text shortened (original word count), no new content added from suffix.`);
-      console.log(`[extractNewContentAdvanced OUTPUT] New Content (text shortened): ""`);
+      console.log(
+        `🔄 Advanced diff: Text shortened (original word count), no new content added from suffix.`
+      );
+      console.log(
+        `[extractNewContentAdvanced OUTPUT] New Content (text shortened): ""`
+      );
       return "";
     }
 
@@ -824,14 +837,18 @@ app.ws("/stream", (ws, req) => {
       console.log(
         `🔧 Advanced diff: Word correction/change detected after prefix at original index ${commonPrefixLength}, content="${correctedContent}"`
       );
-      console.log(`[extractNewContentAdvanced OUTPUT] New Content (correction): "${correctedContent}"`);
+      console.log(
+        `[extractNewContentAdvanced OUTPUT] New Content (correction): "${correctedContent}"`
+      );
       return correctedContent;
     }
 
     console.log(
       `🔄 Advanced diff: No meaningful changes detected. commonPrefix=${commonPrefixLength}, currentLen=${currentOriginalWords.length}, prevLen=${previousOriginalWords.length}`
     );
-    console.log(`[extractNewContentAdvanced OUTPUT] New Content (no meaningful change): ""`);
+    console.log(
+      `[extractNewContentAdvanced OUTPUT] New Content (no meaningful change): ""`
+    );
     return "";
   }
 
@@ -896,7 +913,9 @@ async function convertAndSendAudio(text, ws, streamSid, startTime, isFinal) {
     // Check if TTS result is cached
     if (ttsCache.has(text)) {
       if (currentConversionId !== ws.conversionState.current) {
-        console.log("⚠️ Outdated cached TTS conversion request, skipping sending audio");
+        console.log(
+          "⚠️ Outdated cached TTS conversion request, skipping sending audio"
+        );
         return;
       }
       console.log("✅ Cache hit for TTS conversion");
@@ -930,7 +949,9 @@ async function convertAndSendAudio(text, ws, streamSid, startTime, isFinal) {
 
     if (response.audioContent && ws.readyState === ws.OPEN) {
       if (currentConversionId !== ws.conversionState.current) {
-        console.log("⚠️ Outdated TTS conversion result, skipping sending audio");
+        console.log(
+          "⚠️ Outdated TTS conversion result, skipping sending audio"
+        );
         return;
       }
       // Cache the TTS result for future requests
