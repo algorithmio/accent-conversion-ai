@@ -6,6 +6,26 @@ const textToSpeech = require("@google-cloud/text-to-speech");
 const path = require("path");
 const fs = require("fs");
 
+// Initialize Twilio client for REST API calls (optional for recording)
+const twilio = require('twilio');
+let twilioClient = null;
+
+if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
+  try {
+    // Trim whitespace from credentials
+    const accountSid = process.env.TWILIO_ACCOUNT_SID.trim();
+    const authToken = process.env.TWILIO_AUTH_TOKEN.trim();
+    
+    twilioClient = twilio(accountSid, authToken);
+    console.log("✅ Twilio client initialized for recording functionality");
+  } catch (error) {
+    console.warn("⚠️ Failed to initialize Twilio client:", error.message);
+  }
+} else {
+  console.warn("⚠️ Twilio credentials not found in environment variables");
+  console.warn("📝 Add TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN to .env file to enable recording");
+}
+
 // Import the streaming services
 const StreamingAccentConverterV2 = require("./src/services/StreamingAccentConverterV2");
 const DeepgramStreamingService = require("./src/services/DeepgramStreamingService");
@@ -111,6 +131,9 @@ app.ws("/stream", (ws, req) => {
 
   // Streaming TTS session
   let streamingSession = null;
+
+  // Get host for recording callback
+  const host = req.get('host') || 'localhost:4001';
 
   // Handle Deepgram transcription results
   function handleDeepgramTranscription(data) {
@@ -314,6 +337,26 @@ app.ws("/stream", (ws, req) => {
           streamSid = msg.start.streamSid;
 
           activeConnections.set(callSid, { ws, streamSid });
+
+          // Start programmatic recording (optional)
+          if (twilioClient) {
+            try {
+              console.log(`🎥 Attempting to start recording for call ${callSid}...`);
+              const recording = await twilioClient.calls(callSid).recordings.create({
+                recordingChannels: 'dual',
+              });
+              console.log(`📹 Started recording for call ${callSid}: ${recording.sid}`);
+            } catch (recordingError) {
+              console.error(`❌ Failed to start recording for call ${callSid}:`);
+              console.error(`   Error code: ${recordingError.code}`);
+              console.error(`   Error message: ${recordingError.message}`);
+              if (recordingError.status === 401) {
+                console.error(`   🔑 This is an authentication error. Please verify your Twilio credentials.`);
+              }
+            }
+          } else {
+            console.log(`📝 Recording skipped for call ${callSid} (Twilio client not available)`);
+          }
 
           // Create Deepgram streaming session
           try {
