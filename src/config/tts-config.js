@@ -7,7 +7,7 @@ const TTS_CONFIG = {
   // Voice configuration for British accent conversion
   voice: {
     languageCode: 'en-GB',
-    name: 'en-GB-Chirp3-HD-Fenrir', // High-quality British male voice
+    name: 'en-GB-Chirp3-HD-Aoede', // High-quality British male voice
     ssmlGender: 'MALE'
   },
 
