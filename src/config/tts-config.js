@@ -22,7 +22,8 @@ const TTS_CONFIG = {
 
   // Streaming behavior configuration
   streaming: {
-    keepaliveIntervalMs: 4000,     // Send keepalive every 4 seconds
+    keepaliveIntervalMs: 3000,     // Send keepalive every 3 seconds
+    keepaliveThresholdMs: 2000,    // Send keepalive if no activity for 2 seconds
     maxReconnectAttempts: 3,       // Maximum reconnection attempts
     reconnectBackoffMs: 1000,      // Base backoff time for reconnections
     maxInactiveTimeMs: 5 * 60 * 1000, // 5 minutes max inactive time

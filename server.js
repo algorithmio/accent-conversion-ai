@@ -2,13 +2,13 @@ require("dotenv").config();
 const express = require("express");
 const expressWs = require("express-ws");
 const VoiceResponse = require("twilio").twiml.VoiceResponse;
-const speech = require("@google-cloud/speech").v1p1beta1;
 const textToSpeech = require("@google-cloud/text-to-speech");
 const path = require("path");
 const fs = require("fs");
 
-// Import the new streaming accent converter
+// Import the streaming services
 const StreamingAccentConverterV2 = require("./src/services/StreamingAccentConverterV2");
+const DeepgramStreamingService = require("./src/services/DeepgramStreamingService");
 const { TTS_CONFIG } = require("./src/config/tts-config");
 
 const PORT = process.env.PORT || 4001;
@@ -20,8 +20,8 @@ expressWs(app, server);
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
-// Initialize Google Cloud clients
-let sttClient, ttsClient;
+// Initialize TTS client
+let ttsClient;
 // Add a global cache for TTS results to speed up repeated conversions
 const ttsCache = new Map();
 // Store active connections
@@ -31,7 +31,6 @@ const credentialsPath = path.join(__dirname, "config/creds.json");
 
 if (fs.existsSync(credentialsPath)) {
   console.log("✅ Using Google Cloud credentials from config/creds.json");
-  sttClient = new speech.SpeechClient({ keyFilename: credentialsPath });
   ttsClient = new textToSpeech.TextToSpeechClient({
     keyFilename: credentialsPath,
   });
@@ -43,14 +42,21 @@ if (fs.existsSync(credentialsPath)) {
   process.exit(1);
 }
 
-
-// Initialize streaming accent converter if enabled
+// Initialize streaming services
 let streamingAccentConverter = new StreamingAccentConverterV2();
+let deepgramService = new DeepgramStreamingService();
 
-// Setup error handling for streaming converter
+// Setup error handling for streaming services
 streamingAccentConverter.on("error", (errorData) => {
   console.error(
     `❌ StreamingAccentConverter error for session ${errorData.sessionId}:`,
+    errorData.error.message
+  );
+});
+
+deepgramService.on("error", (errorData) => {
+  console.error(
+    `❌ DeepgramStreamingService error for session ${errorData.sessionId}:`,
     errorData.error.message
   );
 });
@@ -82,7 +88,7 @@ app.ws("/stream", (ws, req) => {
 
   let callSid = null;
   let streamSid = null;
-  let recognizeStream = null;
+  let deepgramSession = null;
   let audioChunks = [];
   let streamDestroyed = false;
   let lastConvertedText = "";
@@ -93,7 +99,7 @@ app.ws("/stream", (ws, req) => {
   let lastAudioSentTime = 0;
   let previousInterimText = "";
   let isInitialPhaseComplete = false;
-  let firstAudioChunkSentToStt = false;
+  let firstAudioChunkSent = false;
   
   // Enhanced tracking for better accuracy
   let completedSentences = new Set(); // Track completed final sentences
@@ -106,75 +112,19 @@ app.ws("/stream", (ws, req) => {
   // Streaming TTS session
   let streamingSession = null;
 
-  // Function to create a new recognition stream
-  function createRecognitionStream() {
-    if (recognizeStream && !streamDestroyed) {
-      try {
-        recognizeStream.end();
-      } catch (error) {
-        // Silent error handling
-      }
+  // Handle Deepgram transcription results
+  function handleDeepgramTranscription(data) {
+    const { transcript, isFinal, words, confidence } = data;
+    
+    // Update speech activity tracking
+    lastSpeechTime = Date.now();
+    isCurrentlySpeaking = true;
+
+    if (isFinal) {
+      handleFinalTranscript(transcript);
+    } else {
+      handleInterimTranscript(transcript);
     }
-
-    streamDestroyed = false;
-
-    recognizeStream = sttClient.streamingRecognize({
-      config: {
-        encoding: "MULAW",
-        sampleRateHertz: 8000,
-        languageCode: "en-IN",
-        model: "telephony",
-        useEnhanced: true,
-        enableAutomaticPunctuation: true,
-      },
-      interimResults: true,
-    });
-
-    recognizeStream.on("data", async (data) => {
-      if (data.results && data.results[0] && data.results[0].alternatives[0]) {
-        const transcript = data.results[0].alternatives[0].transcript;
-        const isFinal = data.results[0].isFinal;
-        const confidence = data.results[0].alternatives[0].confidence;
-
-        // Update speech activity tracking
-        lastSpeechTime = Date.now();
-        isCurrentlySpeaking = true;
-
-        if (isFinal) {
-          await handleFinalTranscript(transcript);
-        } else {
-          await handleInterimTranscript(transcript);
-        }
-      }
-    });
-
-    // Monitor speech activity for natural pauses
-    setInterval(() => {
-      if (isCurrentlySpeaking && Date.now() - lastSpeechTime > 2000) {
-        isCurrentlySpeaking = false;
-        // Reset state for new speech segment
-        resetSegmentState();
-      }
-    }, 1000);
-
-    recognizeStream.on("error", (error) => {
-      streamDestroyed = true;
-      setTimeout(() => {
-        if (activeConnections.has(callSid) && !streamDestroyed) {
-          createRecognitionStream();
-        }
-      }, 2000);
-    });
-
-    recognizeStream.on("end", () => {
-      streamDestroyed = true;
-    });
-
-    recognizeStream.on("close", () => {
-      streamDestroyed = true;
-    });
-
-    return recognizeStream;
   }
 
   // Reset state when a speech segment ends
@@ -365,8 +315,14 @@ app.ws("/stream", (ws, req) => {
 
           activeConnections.set(callSid, { ws, streamSid });
 
-          // Create initial recognition stream
-          createRecognitionStream();
+          // Create Deepgram streaming session
+          try {
+            deepgramSession = deepgramService.createStreamingSession(callSid);
+            deepgramService.on('transcription', handleDeepgramTranscription);
+          } catch (error) {
+            console.error(`❌ Error creating Deepgram session:`, error);
+            streamDestroyed = true;
+          }
 
           // Initialize streaming TTS session if enabled
           if (streamingAccentConverter) {
@@ -387,29 +343,15 @@ app.ws("/stream", (ws, req) => {
           break;
 
         case "media":
-          if (
-            recognizeStream &&
-            !streamDestroyed &&
-            msg.media &&
-            msg.media.payload
-          ) {
+          if (deepgramSession && !streamDestroyed && msg.media && msg.media.payload) {
             const audioData = Buffer.from(msg.media.payload, "base64");
 
-            if (!firstAudioChunkSentToStt) {
+            if (!firstAudioChunkSent) {
               try {
-                if (
-                  recognizeStream &&
-                  !streamDestroyed &&
-                  recognizeStream.writable
-                ) {
-                  recognizeStream.write(audioData);
-                  firstAudioChunkSentToStt = true;
-                } else {
-                  audioChunks.push(audioData);
-                }
+                deepgramSession.send(audioData);
+                firstAudioChunkSent = true;
               } catch (error) {
                 streamDestroyed = true;
-                createRecognitionStream();
                 audioChunks.push(audioData);
               }
             } else {
@@ -420,28 +362,15 @@ app.ws("/stream", (ws, req) => {
                 audioChunks = [];
 
                 try {
-                  if (
-                    recognizeStream &&
-                    !streamDestroyed &&
-                    recognizeStream.writable
-                  ) {
-                    recognizeStream.write(combinedAudio);
+                  if (deepgramSession && !streamDestroyed) {
+                    deepgramSession.send(combinedAudio);
                     lastAudioSentTime = Date.now();
                   } else {
-                    audioChunks.unshift(
-                      ...(Buffer.isBuffer(combinedAudio)
-                        ? [combinedAudio]
-                        : combinedAudio)
-                    );
+                    audioChunks.unshift(combinedAudio);
                   }
                 } catch (error) {
-                  audioChunks.unshift(
-                    ...(Buffer.isBuffer(combinedAudio)
-                      ? [combinedAudio]
-                      : combinedAudio)
-                  );
+                  audioChunks.unshift(combinedAudio);
                   streamDestroyed = true;
-                  createRecognitionStream();
                 }
               }
             }
@@ -450,9 +379,9 @@ app.ws("/stream", (ws, req) => {
 
         case "stop":
           streamDestroyed = true;
-          if (recognizeStream) {
+          if (deepgramSession) {
             try {
-              recognizeStream.end();
+              deepgramSession.close();
             } catch (error) {
               // Silent error handling
             }
@@ -470,9 +399,12 @@ app.ws("/stream", (ws, req) => {
 
           activeConnections.delete(callSid);
 
-          // Cleanup inactive sessions when a call disconnects
+          // Cleanup inactive sessions
           if (streamingAccentConverter) {
             streamingAccentConverter.cleanupInactiveSessions();
+          }
+          if (deepgramService) {
+            deepgramService.cleanupInactiveSessions();
           }
           break;
       }
@@ -484,9 +416,9 @@ app.ws("/stream", (ws, req) => {
   ws.on("close", () => {
     streamDestroyed = true;
 
-    if (recognizeStream) {
+    if (deepgramSession) {
       try {
-        recognizeStream.end();
+        deepgramSession.close();
       } catch (error) {
         // Silent error handling
       }
@@ -506,9 +438,12 @@ app.ws("/stream", (ws, req) => {
       activeConnections.delete(callSid);
     }
 
-    // Cleanup inactive sessions when WebSocket closes
+    // Cleanup inactive sessions
     if (streamingAccentConverter) {
       streamingAccentConverter.cleanupInactiveSessions();
+    }
+    if (deepgramService) {
+      deepgramService.cleanupInactiveSessions();
     }
   });
 
@@ -525,9 +460,12 @@ app.ws("/stream", (ws, req) => {
       streamingSession = null;
     }
 
-    // Cleanup inactive sessions when WebSocket errors
+    // Cleanup inactive sessions
     if (streamingAccentConverter) {
       streamingAccentConverter.cleanupInactiveSessions();
+    }
+    if (deepgramService) {
+      deepgramService.cleanupInactiveSessions();
     }
   });
 
@@ -591,37 +529,6 @@ app.ws("/stream", (ws, req) => {
       }
 
       return true;
-    }
-  }
-
-  // Process natural conversation
-  async function processNaturalConversation(text, isFinal) {
-    const cleanText = cleanForComparison(text);
-
-    // Add to conversation history
-    conversationHistory.push({
-      originalText: text,
-      cleanText: cleanText,
-      timestamp: Date.now(),
-      isFinal: isFinal,
-    });
-
-    // Keep only recent history (last 3 items for efficiency)
-    if (conversationHistory.length > 3) {
-      conversationHistory = conversationHistory.slice(-3);
-    }
-
-    // Update tracking
-    lastConvertedText = text;
-    lastConversionTime = Date.now();
-
-    const startTime = Date.now();
-
-    try {
-      await convertAndSendAudio(text, ws, streamSid, startTime, isFinal);
-      lastAudioSentTime = Date.now();
-    } catch (error) {
-      // Silent error handling
     }
   }
 

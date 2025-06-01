@@ -122,19 +122,27 @@ class StreamingTTSService extends EventEmitter {
    * @param {Object} sessionData - Session data
    */
   setupKeepalive(sessionId, sessionData) {
-    // Use configured keepalive interval
+    // Use configured keepalive interval and threshold
     const keepaliveInterval = TTS_CONFIG.streaming.keepaliveIntervalMs;
+    const keepaliveThreshold = TTS_CONFIG.streaming.keepaliveThresholdMs;
+    
+    // Clear any existing keepalive interval
+    if (sessionData.keepaliveInterval) {
+      clearInterval(sessionData.keepaliveInterval);
+      sessionData.keepaliveInterval = null;
+    }
     
     sessionData.keepaliveInterval = setInterval(() => {
       if (!sessionData.isActive) {
+        clearInterval(sessionData.keepaliveInterval);
         return;
       }
 
       const timeSinceLastText = Date.now() - sessionData.lastTextTime;
       const timeSinceLastKeepalive = Date.now() - sessionData.lastKeepaliveTime;
 
-      // Only send keepalive if no text has been sent recently
-      if (timeSinceLastText > 3000 && timeSinceLastKeepalive > 3000) {
+      // Only send keepalive if no text has been sent recently and no recent keepalive
+      if (timeSinceLastText > keepaliveThreshold && timeSinceLastKeepalive > keepaliveThreshold) {
         try {
           console.log(`💓 StreamingTTS: Sending keepalive for session ${sessionId}`);
           
@@ -148,12 +156,21 @@ class StreamingTTSService extends EventEmitter {
           if (sessionData.streamingCall && sessionData.isConfigured) {
             sessionData.streamingCall.write(keepaliveRequest);
             sessionData.lastKeepaliveTime = Date.now();
+          } else {
+            // Stream not ready, attempt to recreate
+            console.warn(`⚠️  StreamingTTS: Stream not ready for keepalive on session ${sessionId}, attempting recreation`);
+            this.recreateStream(sessionId, sessionData);
           }
         } catch (error) {
           console.error(`❌ StreamingTTS: Keepalive error for session ${sessionId}:`, error.message);
+          // Attempt to recreate stream on keepalive error
+          this.handleStreamError(sessionId, error, sessionData);
         }
       }
     }, keepaliveInterval);
+
+    // Store initial keepalive time
+    sessionData.lastKeepaliveTime = Date.now();
   }
 
   /**
